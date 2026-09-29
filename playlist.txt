@@ -1,0 +1,271 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+////////////////////////////////////
+Apriori
+
+def apriori(transactions, min_sup, trace=None):
+    baskets = [set(basket) for basket in transactions.values()]
+    candidates = [(item,) for item in sorted({item for basket in baskets for item in basket})]
+    pruned = []
+    frequent = []
+    k = 1
+    while candidates or pruned:
+        counts = {c: sum(set(c) <= basket for basket in baskets) for c in candidates}
+        level = [c for c in candidates if counts[c] >= min_sup]
+        frequent.extend(level)
+        if trace is not None:
+            trace.setdefault("levels", []).append(
+                {"k": k, "C": counts, "L": {c: counts[c] for c in level}, "pruned": pruned}
+            )
+
+        level_set = set(level)
+        candidates, pruned = [], []
+        for i in range(len(level)):
+            for j in range(i + 1, len(level)):
+                a, b = level[i], level[j]
+                if a[:-1] != b[:-1]:
+                    break
+                candidate = a + b[-1:]
+                subsets = [candidate[:m] + candidate[m + 1:] for m in range(len(candidate))]
+                missing = [s for s in subsets if s not in level_set]
+                if missing:
+                    pruned.append((candidate, missing))
+                else:
+                    candidates.append(candidate)
+        k += 1
+    return frequent
+
+
+import numpy as np
+import pandas as pd
+
+////////////////////////////
+DIC
+def dic(transactions, min_sup, M=5, trace=None):
+    blocks = [block.tolist() for block in np.array_split(np.array(list(transactions)), M)]
+    baskets = {tid: set(basket) for tid, basket in transactions.items()}
+    items = np.unique(np.concatenate([np.array(basket) for basket in transactions.values()])).tolist()
+
+    state, count, seen, started, square_at, solid_at = {}, {}, {}, {}, {}, {}
+    order = []
+
+    def add_counter(itemset, step):
+        state[itemset] = "DC"
+        count[itemset] = 0
+        seen[itemset] = 0
+        started[itemset] = step
+        order.append(itemset)
+
+    for item in items:
+        add_counter((item,), 0)
+
+    history = []
+    step = 0
+    while "DC" in state.values() or "DS" in state.values():
+        for tid in blocks[step % M]:
+            for itemset in order:
+                if state[itemset] in ("DC", "DS") and set(itemset).issubset(baskets[tid]):
+                    count[itemset] += 1
+
+        new_square = False
+        for itemset in order:
+            if state[itemset] in ("DC", "DS"):
+                seen[itemset] += 1
+                if state[itemset] == "DC" and count[itemset] >= min_sup:
+                    state[itemset] = "DS"
+                    square_at[itemset] = step
+                    new_square = True
+
+        if new_square:
+            squares = [itemset for itemset in order if state[itemset] in ("DS", "SS")]
+            for a in squares:
+                for b in squares:
+                    if a[:-1] == b[:-1] and a[-1] < b[-1]:
+                        candidate = a + b[-1:]
+                        subsets = {tuple(x for x in candidate if x != dropped) for dropped in candidate}
+                        if candidate not in state and subsets.issubset(squares):
+                            add_counter(candidate, step + 1)
+
+        for itemset in order:
+            if state[itemset] in ("DC", "DS") and seen[itemset] == M:
+                state[itemset] = "SS" if state[itemset] == "DS" else "SC"
+                solid_at[itemset] = step
+
+        history.append({itemset: (state[itemset], count[itemset]) for itemset in order})
+        step += 1
+
+    frequent = [itemset for itemset in order if state[itemset] == "SS"]
+    table = pd.DataFrame(frequent)
+    table.insert(0, "k", table.notna().sum(axis=1))
+    frequent = [frequent[i] for i in table.sort_values(list(table.columns)).index]
+
+    if trace is not None:
+        trace.update({
+            "M": M,
+            "blocks": blocks,
+            "order": order,
+            "state": state,
+            "count": count,
+            "started": started,
+            "square_at": square_at,
+            "solid_at": solid_at,
+            "history": history,
+            "steps": step,
+        })
+    return frequent
+
+
+////////////////////////////////////
+FP Growth
+
+class FPNode:
+    def __init__(self, item, parent, node_id):
+        self.item = item
+        self.count = 0
+        self.parent = parent
+        self.children = {}
+        self.node_id = node_id
+
+
+def build_fp_tree(weighted_baskets, min_sup, rank):
+    freq = {}
+    for basket, n in weighted_baskets:
+        for item in basket:
+            freq[item] = freq.get(item, 0) + n
+    header = {item: [] for item in sorted((i for i in freq if freq[i] >= min_sup), key=rank.get)}
+    root = FPNode(None, None, 0)
+    ordered = []
+    nodes = 0
+    for basket, n in weighted_baskets:
+        path = sorted((item for item in basket if item in header), key=rank.get)
+        ordered.append((path, n))
+        node = root
+        for item in path:
+            if item not in node.children:
+                nodes += 1
+                node.children[item] = FPNode(item, node, nodes)
+                header[item].append(node.children[item])
+            node = node.children[item]
+            node.count += n
+    return root, header, ordered, nodes
+
+
+def conditional_pattern_base(header, item):
+    base = []
+    for node in header[item]:
+        path = []
+        parent = node.parent
+        while parent.item is not None:
+            path.append(parent.item)
+            parent = parent.parent
+        if path:
+            base.append((path[::-1], node.count))
+    return base
+
+
+def fp_growth(transactions, min_sup, trace=None):
+    freq = {}
+    for basket in transactions.values():
+        for item in basket:
+            freq[item] = freq.get(item, 0) + 1
+    f_list = sorted((item for item in freq if freq[item] >= min_sup), key=lambda item: (-freq[item], item))
+    rank = {item: r for r, item in enumerate(f_list)}
+    root, header, ordered, tree_nodes = build_fp_tree([(basket, 1) for basket in transactions.values()], min_sup, rank)
+
+    frequent = []
+    stats = {"conditional_nodes": 0}
+
+    def mine(header, suffix):
+        for item in sorted(header, key=rank.get, reverse=True):
+            itemset = suffix + (item,)
+            frequent.append(tuple(sorted(itemset)))
+            _, cond_header, _, nodes = build_fp_tree(conditional_pattern_base(header, item), min_sup, rank)
+            stats["conditional_nodes"] += nodes
+            mine(cond_header, itemset)
+
+    mine(header, ())
+
+    if trace is not None:
+        trace.update({
+            "freq": freq,
+            "rank": rank,
+            "root": root,
+            "header": header,
+            "ordered": ordered,
+            "tree_nodes": tree_nodes,
+            "conditional_nodes": stats["conditional_nodes"],
+        })
+    return sorted(frequent, key=lambda s: (len(s), s))
+
+
+////////////////////////////////////////
+ECLAT
+
+def eclat(transactions, min_sup, trace=None):
+    records = []
+    frequent = []
+
+    def extend(prefix_class):
+        for i, (itemset_a, tids_a) in enumerate(prefix_class):
+            frequent.append(itemset_a)
+            next_class = []
+            for itemset_b, tids_b in prefix_class[i + 1:]:
+                itemset = itemset_a + itemset_b[-1:]
+                tids = tids_a & tids_b
+                records.append((itemset, tids))
+                if len(tids) >= min_sup:
+                    next_class.append((itemset, tids))
+            extend(next_class)
+
+    extend([((item,), set(tids)) for item, tids in sorted(transactions.items()) if len(tids) >= min_sup])
+
+    if trace is not None:
+        trace["records"] = records
+    return sorted(frequent, key=lambda s: (len(s), s))
