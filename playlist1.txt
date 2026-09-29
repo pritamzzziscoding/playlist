@@ -1,0 +1,468 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+////////////////////////////////////
+Apriori
+
+#include <algorithm>
+#include <map>
+#include <set>
+#include <string>
+#include <vector>
+
+using Itemset = std::vector<std::string>;
+using Transactions = std::map<std::string, std::vector<std::string>>;
+
+std::vector<Itemset> apriori(const Transactions& transactions, int min_sup) {
+    std::vector<std::set<std::string>> baskets;
+    std::set<std::string> all_items;
+    for (const auto& entry : transactions) {
+        baskets.push_back(std::set<std::string>(entry.second.begin(), entry.second.end()));
+        all_items.insert(entry.second.begin(), entry.second.end());
+    }
+
+    std::vector<Itemset> candidates;
+    for (const auto& item : all_items) {
+        candidates.push_back({item});
+    }
+
+    std::vector<Itemset> frequent;
+    while (!candidates.empty()) {
+        std::vector<Itemset> level;
+        for (const auto& candidate : candidates) {
+            int count = 0;
+            for (const auto& basket : baskets) {
+                if (std::includes(basket.begin(), basket.end(), candidate.begin(), candidate.end())) {
+                    count++;
+                }
+            }
+            if (count >= min_sup) {
+                level.push_back(candidate);
+            }
+        }
+        frequent.insert(frequent.end(), level.begin(), level.end());
+
+        std::set<Itemset> level_set(level.begin(), level.end());
+        candidates.clear();
+        for (size_t i = 0; i < level.size(); i++) {
+            for (size_t j = i + 1; j < level.size(); j++) {
+                const Itemset& a = level[i];
+                const Itemset& b = level[j];
+                if (!std::equal(a.begin(), a.end() - 1, b.begin())) {
+                    break;
+                }
+                Itemset candidate = a;
+                candidate.push_back(b.back());
+                bool all_subsets_frequent = true;
+                for (size_t m = 0; m < candidate.size() && all_subsets_frequent; m++) {
+                    Itemset subset = candidate;
+                    subset.erase(subset.begin() + m);
+                    all_subsets_frequent = level_set.count(subset) > 0;
+                }
+                if (all_subsets_frequent) {
+                    candidates.push_back(candidate);
+                }
+            }
+        }
+    }
+    return frequent;
+}
+
+
+////////////////////////////
+DIC
+
+#include <map>
+#include <set>
+#include <string>
+#include <vector>
+
+using Itemset = std::vector<std::string>;
+using Transactions = std::map<std::string, std::vector<std::string>>;
+
+std::vector<Itemset> dic(const Transactions& transactions, int min_sup, int M = 5) {
+    std::vector<std::string> tids;
+    std::map<std::string, std::set<std::string>> baskets;
+    std::set<std::string> items;
+    for (const auto& entry : transactions) {
+        tids.push_back(entry.first);
+        baskets[entry.first] = std::set<std::string>(entry.second.begin(), entry.second.end());
+        for (const auto& item : entry.second) {
+            items.insert(item);
+        }
+    }
+
+    std::vector<std::vector<std::string>> blocks(M);
+    int n = tids.size();
+    int start = 0;
+    for (int b = 0; b < M; b++) {
+        int size = n / M + (b < n % M ? 1 : 0);
+        for (int t = start; t < start + size; t++) {
+            blocks[b].push_back(tids[t]);
+        }
+        start += size;
+    }
+
+    std::map<Itemset, std::string> state;
+    std::map<Itemset, int> count;
+    std::map<Itemset, int> seen;
+    std::vector<Itemset> order;
+
+    auto add_counter = [&](const Itemset& itemset) {
+        state[itemset] = "DC";
+        count[itemset] = 0;
+        seen[itemset] = 0;
+        order.push_back(itemset);
+    };
+    auto is_dashed = [&](const Itemset& itemset) {
+        return state[itemset] == "DC" || state[itemset] == "DS";
+    };
+    auto is_square = [&](const Itemset& itemset) {
+        return state.count(itemset) > 0 && (state[itemset] == "DS" || state[itemset] == "SS");
+    };
+
+    for (const auto& item : items) {
+        add_counter({item});
+    }
+
+    int step = 0;
+    bool any_dashed = true;
+    while (any_dashed) {
+        for (const auto& tid : blocks[step % M]) {
+            const std::set<std::string>& basket = baskets[tid];
+            for (const auto& itemset : order) {
+                if (!is_dashed(itemset)) {
+                    continue;
+                }
+                bool contained = true;
+                for (const auto& item : itemset) {
+                    if (basket.count(item) == 0) {
+                        contained = false;
+                        break;
+                    }
+                }
+                if (contained) {
+                    count[itemset]++;
+                }
+            }
+        }
+
+        bool new_square = false;
+        for (const auto& itemset : order) {
+            if (is_dashed(itemset)) {
+                seen[itemset]++;
+                if (state[itemset] == "DC" && count[itemset] >= min_sup) {
+                    state[itemset] = "DS";
+                    new_square = true;
+                }
+            }
+        }
+
+        if (new_square) {
+            std::vector<Itemset> squares;
+            for (const auto& itemset : order) {
+                if (is_square(itemset)) {
+                    squares.push_back(itemset);
+                }
+            }
+            for (const auto& a : squares) {
+                for (const auto& b : squares) {
+                    if (a.size() != b.size() || !(a.back() < b.back())) {
+                        continue;
+                    }
+                    if (Itemset(a.begin(), a.end() - 1) != Itemset(b.begin(), b.end() - 1)) {
+                        continue;
+                    }
+                    Itemset candidate = a;
+                    candidate.push_back(b.back());
+                    if (state.count(candidate) > 0) {
+                        continue;
+                    }
+                    bool all_subsets_square = true;
+                    for (size_t dropped = 0; dropped < candidate.size() && all_subsets_square; dropped++) {
+                        Itemset subset;
+                        for (size_t x = 0; x < candidate.size(); x++) {
+                            if (x != dropped) {
+                                subset.push_back(candidate[x]);
+                            }
+                        }
+                        all_subsets_square = is_square(subset);
+                    }
+                    if (all_subsets_square) {
+                        add_counter(candidate);
+                    }
+                }
+            }
+        }
+
+        for (const auto& itemset : order) {
+            if (is_dashed(itemset) && seen[itemset] == M) {
+                state[itemset] = state[itemset] == "DS" ? "SS" : "SC";
+            }
+        }
+
+        step++;
+        any_dashed = false;
+        for (const auto& itemset : order) {
+            if (is_dashed(itemset)) {
+                any_dashed = true;
+            }
+        }
+    }
+
+    auto by_size_then_items = [](const Itemset& a, const Itemset& b) {
+        return a.size() != b.size() ? a.size() < b.size() : a < b;
+    };
+    std::set<Itemset, decltype(by_size_then_items)> sorted_frequent(by_size_then_items);
+    for (const auto& itemset : order) {
+        if (state[itemset] == "SS") {
+            sorted_frequent.insert(itemset);
+        }
+    }
+    return std::vector<Itemset>(sorted_frequent.begin(), sorted_frequent.end());
+}
+
+
+////////////////////////////////////
+FP Growth
+
+#include <algorithm>
+#include <map>
+#include <memory>
+#include <string>
+#include <utility>
+#include <vector>
+
+using Itemset = std::vector<std::string>;
+using Transactions = std::map<std::string, std::vector<std::string>>;
+using WeightedBaskets = std::vector<std::pair<std::vector<std::string>, int>>;
+
+struct FPNode {
+    std::string item;
+    int count = 0;
+    FPNode* parent = nullptr;
+    std::map<std::string, std::unique_ptr<FPNode>> children;
+};
+
+using Header = std::map<std::string, std::vector<FPNode*>>;
+
+struct FPTree {
+    std::unique_ptr<FPNode> root;
+    Header header;
+};
+
+FPTree build_fp_tree(const WeightedBaskets& weighted_baskets, int min_sup, const std::map<std::string, int>& rank) {
+    std::map<std::string, int> freq;
+    for (const auto& entry : weighted_baskets) {
+        for (const auto& item : entry.first) {
+            freq[item] += entry.second;
+        }
+    }
+
+    FPTree tree;
+    tree.root.reset(new FPNode());
+    for (const auto& entry : freq) {
+        if (entry.second >= min_sup) {
+            tree.header[entry.first];
+        }
+    }
+
+    for (const auto& entry : weighted_baskets) {
+        std::vector<std::string> path;
+        for (const auto& item : entry.first) {
+            if (tree.header.count(item) > 0) {
+                path.push_back(item);
+            }
+        }
+        std::sort(path.begin(), path.end(), [&](const std::string& a, const std::string& b) {
+            return rank.at(a) < rank.at(b);
+        });
+
+        FPNode* node = tree.root.get();
+        for (const auto& item : path) {
+            std::unique_ptr<FPNode>& child = node->children[item];
+            if (!child) {
+                child.reset(new FPNode());
+                child->item = item;
+                child->parent = node;
+                tree.header[item].push_back(child.get());
+            }
+            node = child.get();
+            node->count += entry.second;
+        }
+    }
+    return tree;
+}
+
+WeightedBaskets conditional_pattern_base(const Header& header, const std::string& item) {
+    WeightedBaskets base;
+    for (FPNode* node : header.at(item)) {
+        std::vector<std::string> path;
+        for (FPNode* parent = node->parent; parent->parent != nullptr; parent = parent->parent) {
+            path.push_back(parent->item);
+        }
+        if (!path.empty()) {
+            base.push_back({std::vector<std::string>(path.rbegin(), path.rend()), node->count});
+        }
+    }
+    return base;
+}
+
+void mine_fp_tree(const Header& header, const Itemset& suffix, int min_sup,
+                  const std::map<std::string, int>& rank, std::vector<Itemset>& frequent) {
+    std::vector<std::string> items;
+    for (const auto& entry : header) {
+        items.push_back(entry.first);
+    }
+    std::sort(items.begin(), items.end(), [&](const std::string& a, const std::string& b) {
+        return rank.at(a) > rank.at(b);
+    });
+
+    for (const auto& item : items) {
+        Itemset itemset = suffix;
+        itemset.push_back(item);
+        Itemset sorted_itemset = itemset;
+        std::sort(sorted_itemset.begin(), sorted_itemset.end());
+        frequent.push_back(sorted_itemset);
+
+        FPTree conditional_tree = build_fp_tree(conditional_pattern_base(header, item), min_sup, rank);
+        mine_fp_tree(conditional_tree.header, itemset, min_sup, rank, frequent);
+    }
+}
+
+std::vector<Itemset> fp_growth(const Transactions& transactions, int min_sup) {
+    std::map<std::string, int> freq;
+    WeightedBaskets baskets;
+    for (const auto& entry : transactions) {
+        baskets.push_back({entry.second, 1});
+        for (const auto& item : entry.second) {
+            freq[item]++;
+        }
+    }
+
+    std::vector<std::string> f_list;
+    for (const auto& entry : freq) {
+        if (entry.second >= min_sup) {
+            f_list.push_back(entry.first);
+        }
+    }
+    std::sort(f_list.begin(), f_list.end(), [&](const std::string& a, const std::string& b) {
+        return freq[a] != freq[b] ? freq[a] > freq[b] : a < b;
+    });
+    std::map<std::string, int> rank;
+    for (size_t r = 0; r < f_list.size(); r++) {
+        rank[f_list[r]] = r;
+    }
+
+    FPTree tree = build_fp_tree(baskets, min_sup, rank);
+    std::vector<Itemset> frequent;
+    mine_fp_tree(tree.header, {}, min_sup, rank, frequent);
+
+    std::sort(frequent.begin(), frequent.end(), [](const Itemset& a, const Itemset& b) {
+        return a.size() != b.size() ? a.size() < b.size() : a < b;
+    });
+    return frequent;
+}
+
+
+////////////////////////////////////////
+ECLAT
+
+#include <algorithm>
+#include <iterator>
+#include <map>
+#include <set>
+#include <string>
+#include <utility>
+#include <vector>
+
+using Itemset = std::vector<std::string>;
+using VerticalTransactions = std::map<std::string, std::set<std::string>>;
+using PrefixClass = std::vector<std::pair<Itemset, std::set<std::string>>>;
+
+void eclat_extend(const PrefixClass& prefix_class, int min_sup, std::vector<Itemset>& frequent) {
+    for (size_t i = 0; i < prefix_class.size(); i++) {
+        const Itemset& itemset_a = prefix_class[i].first;
+        const std::set<std::string>& tids_a = prefix_class[i].second;
+        frequent.push_back(itemset_a);
+
+        PrefixClass next_class;
+        for (size_t j = i + 1; j < prefix_class.size(); j++) {
+            const Itemset& itemset_b = prefix_class[j].first;
+            const std::set<std::string>& tids_b = prefix_class[j].second;
+
+            Itemset itemset = itemset_a;
+            itemset.push_back(itemset_b.back());
+            std::set<std::string> tids;
+            std::set_intersection(tids_a.begin(), tids_a.end(), tids_b.begin(), tids_b.end(),
+                                  std::inserter(tids, tids.begin()));
+            if ((int)tids.size() >= min_sup) {
+                next_class.push_back({itemset, tids});
+            }
+        }
+        eclat_extend(next_class, min_sup, frequent);
+    }
+}
+
+std::vector<Itemset> eclat(const VerticalTransactions& transactions, int min_sup) {
+    PrefixClass first_class;
+    for (const auto& entry : transactions) {
+        if ((int)entry.second.size() >= min_sup) {
+            first_class.push_back({{entry.first}, entry.second});
+        }
+    }
+
+    std::vector<Itemset> frequent;
+    eclat_extend(first_class, min_sup, frequent);
+
+    std::sort(frequent.begin(), frequent.end(), [](const Itemset& a, const Itemset& b) {
+        return a.size() != b.size() ? a.size() < b.size() : a < b;
+    });
+    return frequent;
+}
