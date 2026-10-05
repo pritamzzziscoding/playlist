@@ -175,3 +175,84 @@ def estimate_affine(src_pts, dst_pts):
     return np.array([[p[0], p[1], p[2]],
                      [p[3], p[4], p[5]],
                      [0,    0,    1   ]])
+
+
+
+import numpy as np
+
+
+# ------------------------------------------------------------------
+# 1. Apply a homography to points:  [x' y' w']^T = H [x y 1]^T,  then divide by w'
+# ------------------------------------------------------------------
+def apply_homography_points(H, pts):
+    """pts: (N, 2) array of (x, y).  Returns (N, 2) transformed points."""
+    pts = np.asarray(pts, float)
+    ones = np.ones((len(pts), 1))
+    p = np.hstack([pts, ones]) @ np.asarray(H, float).T     # (N, 3)
+    return p[:, :2] / p[:, 2:3]                              # divide by w'
+
+
+# ------------------------------------------------------------------
+# 2. Estimate H from point correspondences (the A·h = 0 + SVD recipe)
+# ------------------------------------------------------------------
+def estimate_homography(src_pts, dst_pts):
+    """
+    src_pts, dst_pts : (N, 2) matching points, N >= 4.   dst = H(src)
+    Each pair gives 2 rows:
+        [x y 1  0 0 0  -x'x  -x'y  -x']
+        [0 0 0  x y 1  -y'x  -y'y  -y']
+    Stack them into A, solve A h = 0 with SVD: h = last row of V^T
+    (the singular vector of the SMALLEST singular value).
+    """
+    src = np.asarray(src_pts, float)
+    dst = np.asarray(dst_pts, float)
+    if len(src) < 4:
+        raise ValueError("need at least 4 point pairs")
+
+    rows = []
+    for (x, y), (xp, yp) in zip(src, dst):
+        rows.append([x, y, 1, 0, 0, 0, -xp * x, -xp * y, -xp])
+        rows.append([0, 0, 0, x, y, 1, -yp * x, -yp * y, -yp])
+    A = np.array(rows)
+
+    _, S, Vt = np.linalg.svd(A)
+    h = Vt[-1]                       # smallest singular value's vector
+    H = h.reshape(3, 3)
+    return H / H[2, 2]               # fix the scale ambiguity: h33 = 1
+
+
+# ------------------------------------------------------------------
+# 3. Warp an image with H (inverse mapping, now with the divide by w)
+# ------------------------------------------------------------------
+def warp_homography(img, H, out_shape, fill=0):
+    """
+    Pixel coordinates are used here: x = column, y = row (y points DOWN).
+    H maps SOURCE image coords -> OUTPUT image coords.
+    out_shape = (H_out, W_out).
+    """
+    img = np.asarray(img)
+    h_src, w_src = img.shape[:2]
+    h_out, w_out = out_shape
+
+    rows, cols = np.mgrid[0:h_out, 0:w_out]
+    x_out = cols.astype(float)
+    y_out = rows.astype(float)
+
+    Hinv = np.linalg.inv(np.asarray(H, float))
+    X = Hinv[0, 0] * x_out + Hinv[0, 1] * y_out + Hinv[0, 2]
+    Y = Hinv[1, 0] * x_out + Hinv[1, 1] * y_out + Hinv[1, 2]
+    Wd = Hinv[2, 0] * x_out + Hinv[2, 1] * y_out + Hinv[2, 2]
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        x_src = X / Wd                                  # <-- the new step
+        y_src = Y / Wd
+
+    src_col = np.rint(x_src).astype(int)
+    src_row = np.rint(y_src).astype(int)
+    inside = (np.isfinite(x_src) & np.isfinite(y_src) &
+              (src_row >= 0) & (src_row < h_src) &
+              (src_col >= 0) & (src_col < w_src))
+
+    out = np.full((h_out, w_out) + img.shape[2:], fill, dtype=img.dtype)
+    out[inside] = img[src_row[inside], src_col[inside]]
+    return out
