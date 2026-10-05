@@ -55,3 +55,123 @@ def reflect(img, axis):
     elif axis == "y":
         M = [[-1, 0], [0, 1]]
     return transform_image(img, M)
+
+
+
+
+import numpy as np
+
+
+# ------------------------------------------------------------------
+# Build the 3x3 homogeneous matrix
+# ------------------------------------------------------------------
+def make_affine(A=None, t=(0, 0)):
+    """
+    Build the 3x3 affine matrix  [[A, t],
+                                  [0, 1]]
+    A : 2x2 linear part (rotation / scale / shear / reflection). Default = identity.
+    t : (tx, ty) translation.   tx -> right,  ty -> UP  (maths convention)
+    """
+    A = np.eye(2) if A is None else np.asarray(A, dtype=float)
+    M = np.eye(3)
+    M[:2, :2] = A
+    M[:2, 2] = t
+    return M
+
+
+def translation_matrix(tx, ty):
+    return make_affine(np.eye(2), (tx, ty))
+
+
+def rotation_matrix(theta):
+    t = np.radians(theta)
+    return make_affine([[np.cos(t), -np.sin(t)],
+                        [np.sin(t),  np.cos(t)]])
+
+
+# ------------------------------------------------------------------
+# CORE: apply a 3x3 affine matrix to an image (inverse mapping)
+# ------------------------------------------------------------------
+def affine_transform_image(img, M, out_shape="same", fill=0):
+    """
+    img       : 2D (grey) or 3D (colour) array
+    M         : 3x3 affine matrix (forward transform)
+    out_shape : 'same' -> keep the input size (content may get cropped)
+                'fit'  -> grow the canvas so nothing is cut off
+                (H, W) -> explicit size
+    Coordinates: origin at image centre, x right, y UP.
+    """
+    img = np.asarray(img)
+    H, W = img.shape[:2]
+    M = np.asarray(M, dtype=float)
+
+    # corners of the image rectangle in homogeneous form, moved by M
+    corners = np.array([[-W/2,  W/2, W/2, -W/2],
+                        [ H/2,  H/2, -H/2, -H/2],
+                        [   1,    1,    1,    1]])
+    new = M @ corners
+
+    ox = oy = 0.0                       # where the output canvas is centred
+    if out_shape == "same":
+        H_out, W_out = H, W
+    elif out_shape == "fit":
+        W_out = int(np.ceil(new[0].max() - new[0].min() - 1e-9))
+        H_out = int(np.ceil(new[1].max() - new[1].min() - 1e-9))
+        ox = (new[0].max() + new[0].min()) / 2   # centre of the moved corners
+        oy = (new[1].max() + new[1].min()) / 2
+    else:
+        H_out, W_out = out_shape
+
+    # output pixel grid -> maths coordinates (origin centre, y up)
+    rows, cols = np.mgrid[0:H_out, 0:W_out]
+    x_out = cols - (W_out - 1) / 2 + ox
+    y_out = (H_out - 1) / 2 - rows + oy
+
+    # go BACKWARDS: source = inv(M) @ [x_out, y_out, 1]
+    Minv = np.linalg.inv(M)
+    x_src = Minv[0, 0] * x_out + Minv[0, 1] * y_out + Minv[0, 2]
+    y_src = Minv[1, 0] * x_out + Minv[1, 1] * y_out + Minv[1, 2]
+
+    src_col = np.rint(x_src + (W - 1) / 2).astype(int)
+    src_row = np.rint((H - 1) / 2 - y_src).astype(int)
+
+    inside = (src_row >= 0) & (src_row < H) & (src_col >= 0) & (src_col < W)
+    out = np.full((H_out, W_out) + img.shape[2:], fill, dtype=img.dtype)
+    out[inside] = img[src_row[inside], src_col[inside]]
+    return out
+
+
+# ------------------------------------------------------------------
+# Convenience functions: image + numbers -> transformed image
+# ------------------------------------------------------------------
+def translate(img, tx, ty, out_shape="same"):
+    """Move the image tx pixels right and ty pixels up."""
+    return affine_transform_image(img, translation_matrix(tx, ty), out_shape)
+
+
+def affine(img, A, t=(0, 0), out_shape="same"):
+    """General affine: linear part A (2x2) followed by translation t."""
+    return affine_transform_image(img, make_affine(A, t), out_shape)
+
+
+# ------------------------------------------------------------------
+# Estimate an affine matrix from point correspondences (6 unknowns)
+# ------------------------------------------------------------------
+def estimate_affine(src_pts, dst_pts):
+    """
+    src_pts, dst_pts : (N, 2) arrays, N >= 3 (maths coordinates).
+    Solves the 6 unknowns m11 m12 tx m21 m22 ty by least squares.
+    Each point pair gives 2 equations, so 3 pairs are the minimum.
+    """
+    src = np.asarray(src_pts, float)
+    dst = np.asarray(dst_pts, float)
+    rows, rhs = [], []
+    for (x, y), (xp, yp) in zip(src, dst):
+        rows.append([x, y, 1, 0, 0, 0]); rhs.append(xp)
+        rows.append([0, 0, 0, x, y, 1]); rhs.append(yp)
+    A = np.array(rows)
+    b = np.array(rhs)
+    p = np.linalg.inv(A.T @ A) @ A.T @ b          # least squares: (A^T A)^-1 A^T b
+    return np.array([[p[0], p[1], p[2]],
+                     [p[3], p[4], p[5]],
+                     [0,    0,    1   ]])
