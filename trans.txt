@@ -1,0 +1,57 @@
+import numpy as np
+
+def transform_image(img, M, fill=0):
+    img = np.asarray(img)
+    H, W = img.shape[:2]
+    M = np.asarray(M, dtype=float)
+
+    corners = np.array([[-W/2,  W/2, W/2, -W/2],
+                        [ H/2,  H/2, -H/2, -H/2]])
+    new = M @ corners
+    W_out = int(np.ceil(new[0].max() - new[0].min() - 1e-9))
+    H_out = int(np.ceil(new[1].max() - new[1].min() - 1e-9))
+
+    rows, cols = np.mgrid[0:H_out, 0:W_out]
+    x_out = cols - (W_out - 1) / 2
+    y_out = (H_out - 1) / 2 - rows
+
+    Minv = np.linalg.inv(M)
+    x_src = Minv[0, 0] * x_out + Minv[0, 1] * y_out
+    y_src = Minv[1, 0] * x_out + Minv[1, 1] * y_out
+
+    src_col = np.rint(x_src + (W - 1) / 2).astype(int)
+    src_row = np.rint((H - 1) / 2 - y_src).astype(int)
+
+    inside = (src_row >= 0) & (src_row < H) & (src_col >= 0) & (src_col < W)
+    out = np.full((H_out, W_out) + img.shape[2:], fill, dtype=img.dtype)
+    out[inside] = img[src_row[inside], src_col[inside]]
+    return out
+
+
+def rotate(img, theta):
+    t = np.radians(theta)
+    M = [[np.cos(t), -np.sin(t)],
+         [np.sin(t),  np.cos(t)]]
+    return transform_image(img, M)
+
+
+def scale(img, sx, sy=None):
+    if sy is None:
+        sy = sx
+    return transform_image(img, [[sx, 0], [0, sy]])
+
+
+def shear_x(img, s):
+    return transform_image(img, [[1, s], [0, 1]])
+
+
+def shear_y(img, s):
+    return transform_image(img, [[1, 0], [s, 1]])
+
+
+def reflect(img, axis):
+    if axis == "x":
+        M = [[1, 0], [0, -1]]
+    elif axis == "y":
+        M = [[-1, 0], [0, 1]]
+    return transform_image(img, M)
